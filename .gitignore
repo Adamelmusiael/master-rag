@@ -1,0 +1,7 @@
+# Types to ignore
+*.pdf
+*.sqlite3
+*.db
+
+# Files to ignore
+/chroma_db/*
