@@ -100,6 +100,25 @@ async def delete_documents(ids: List[str],
         return {"message": f"Document {id} failed to delete.\nE: {e}"}
 
 
+@app.delete("/index/delete_by_doc_id/", tags=["Vector Database"])
+async def delete_by_doc_id(document_id: str,
+                           deepends=Depends(check_database_connection)):
+    try:
+        vectorstore.delete(where={"document_id": document_id})
+        vectorstore.persist()
+        return {"deleted_document_id": document_id}
+    except TypeError:
+        docs = vectorstore.get(where={"document_id": document_id})
+        ids = [d["id"] for d in docs["documents"]] if "documents" in docs else []
+        if ids:
+            vectorstore.delete(ids=ids)
+            vectorstore.persist()
+        return {"deleted_document_id": document_id, "deleted_chunk_count": len(ids)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 @app.get("/index/get_documents_meta/", tags=["Vector Database"])
 async def get_documents_meta(depends=Depends(check_database_connection)):
     try:
