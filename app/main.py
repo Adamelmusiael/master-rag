@@ -1,6 +1,8 @@
 import os
 from contextlib import asynccontextmanager
-# from typing import Annotated
+from typing import List, Optional
+from uuid import uuid4
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Depends
 from langchain_community.vectorstores import Chroma
@@ -29,7 +31,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 
 
 async def check_database_connection():
@@ -43,24 +45,65 @@ def hello_user(user_name: str, depends=Depends(check_database_connection)):
     return f"Hello {user_name}!"
 
 
-@app.post("/indx/add_document/", tags=["Vector Database"])
+@app.post("/index/add_document/", tags=["Vector Database"])
 async def add_document(file_path: str,
                        depends=Depends(check_database_connection)):
-    doc = load_document(file_path)
+    """Validate path, load, chunk, attach document_id to each chunk and add to vectorstore.
+
+    Security: only allow loading files located under the project's `raw_docs/` directory to
+    avoid path traversal. Returns a structured JSON with the document_id and chunk ids.
+    """
+    project_root = Path(__file__).resolve().parents[1]
+    allowed_dir = (project_root / "raw_docs").resolve()
+
+    req_path = Path(file_path)
+    if not req_path.is_absolute():
+        candidate = (project_root / file_path).resolve()
+    else:
+        candidate = req_path.resolve()
+
+    try:
+        candidate.relative_to(allowed_dir)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file path; allowed directory: raw_docs/")
+
+    if not candidate.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    doc = load_document(str(candidate))
     chunked_doc = chunk_document(doc)
 
+    # Attach a document_id to each chunk
+    document_id = str(uuid4())
+    for chunk in chunked_doc:
+        chunk.metadata = chunk.metadata or {}
+        chunk.metadata["document_id"] = document_id
+        chunk.metadata["source"] = str(candidate)
+
     ids = vectorstore.add_documents(chunked_doc)
-
     vectorstore.persist()
-    return {"message": f"Document Succesfully loaded, id: {ids}"}
+
+    return {"document_id": document_id, "chunk_count": len(ids), "chunk_ids": ids}
 
 
-@app.post("index/delete_document/", tags=["users"])
-async def delete_document(id: int,
+@app.delete("/index/delete_document/", tags=["Vector Database"])
+async def delete_documents(ids: List[str],
                           depends=Depends(check_database_connection)):
 
     try:
-        vectorstore.delete(ids=[id])
+        vectorstore.delete(ids=ids)
+        vectorstore.persist()
         return {"message": f"Document {id} succesfully deleted."}
     except Exception as e:
         return {"message": f"Document {id} failed to delete.\nE: {e}"}
+
+
+@app.get("/index/get_documents_meta/", tags=["Vector Database"])
+async def get_documents_meta(depends=Depends(check_database_connection)):
+    try:
+        docs = vectorstore.get()
+        return {"documents": docs}
+    except Exception as e:
+        return {"message": f"Erro: {e}"}
